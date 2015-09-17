@@ -1,22 +1,20 @@
 /*
- * This is the source code of Telegram for Android v. 1.3.2.
+ * This is the source code of Telegram for Android v. 2.x.x.
  * It is licensed under GNU GPL v. 2 or later.
  * You should have received a copy of the license in this archive (see LICENSE).
  *
- * Copyright Nikolai Kudashov, 2013.
+ * Copyright Nikolai Kudashov, 2013-2015.
  */
 
 package org.telegram.messenger;
 
-import android.net.Uri;
 import android.util.Log;
 
-import org.telegram.ui.ApplicationLoader;
+import org.telegram.android.time.FastDateFormat;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
-import java.util.ArrayList;
 import java.util.Locale;
 
 public class FileLog {
@@ -44,26 +42,24 @@ public class FileLog {
             return;
         }
         dateFormat = FastDateFormat.getInstance("dd_MM_yyyy_HH_mm_ss", Locale.US);
-        File sdCard = ApplicationLoader.applicationContext.getExternalFilesDir(null);
-        if (sdCard == null) {
-            return;
-        }
-        File dir = new File(sdCard.getAbsolutePath() + "/logs");
-        if (dir == null) {
-            return;
-        }
-        dir.mkdirs();
-        currentFile = new File(dir, dateFormat.format(System.currentTimeMillis()) + ".txt");
-        if (currentFile == null) {
-            return;
+        try {
+            File sdCard = ApplicationLoader.applicationContext.getExternalFilesDir(null);
+            if (sdCard == null) {
+                return;
+            }
+            File dir = new File(sdCard.getAbsolutePath() + "/logs");
+            dir.mkdirs();
+            currentFile = new File(dir, dateFormat.format(System.currentTimeMillis()) + ".txt");
+        } catch (Exception e) {
+            e.printStackTrace();
         }
         try {
+            logQueue = new DispatchQueue("logQueue");
             currentFile.createNewFile();
             FileOutputStream stream = new FileOutputStream(currentFile);
             streamWriter = new OutputStreamWriter(stream);
             streamWriter.write("-----start log " + dateFormat.format(System.currentTimeMillis()) + "-----\n");
             streamWriter.flush();
-            logQueue = new DispatchQueue("logQueue");
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -110,7 +106,7 @@ public class FileLog {
         }
     }
 
-    public static void e(final String tag, final Exception e) {
+    public static void e(final String tag, final Throwable e) {
         if (!BuildVars.DEBUG_VERSION) {
             return;
         }
@@ -156,8 +152,27 @@ public class FileLog {
         }
     }
 
+    public static void w(final String tag, final String message) {
+        if (!BuildVars.DEBUG_VERSION) {
+            return;
+        }
+        Log.w(tag, message);
+        if (getInstance().streamWriter != null) {
+            getInstance().logQueue.postRunnable(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        getInstance().streamWriter.write(getInstance().dateFormat.format(System.currentTimeMillis()) + " W/" + tag + ": " + message + "\n");
+                        getInstance().streamWriter.flush();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+        }
+    }
+
     public static void cleanupLogs() {
-        ArrayList<Uri> uris = new ArrayList<Uri>();
         File sdCard = ApplicationLoader.applicationContext.getExternalFilesDir(null);
         File dir = new File (sdCard.getAbsolutePath() + "/logs");
         File[] files = dir.listFiles();

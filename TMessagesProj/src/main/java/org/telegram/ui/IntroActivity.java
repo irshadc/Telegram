@@ -8,25 +8,30 @@
 
 package org.telegram.ui;
 
+import android.animation.ObjectAnimator;
+import android.animation.StateListAnimator;
+import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.database.DataSetObserver;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
 import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
-import android.support.v7.app.ActionBarActivity;
-import android.text.Html;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.TextView;
 
-import org.telegram.messenger.LocaleController;
+import org.telegram.android.AndroidUtilities;
+import org.telegram.android.LocaleController;
 import org.telegram.messenger.R;
-import org.telegram.messenger.Utilities;
 
-public class IntroActivity extends ActionBarActivity {
+public class IntroActivity extends Activity {
     private ViewPager viewPager;
     private ImageView topImage1;
     private ImageView topImage2;
@@ -40,9 +45,16 @@ public class IntroActivity extends ActionBarActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        setTheme(R.style.Theme_TMessages);
         super.onCreate(savedInstanceState);
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
 
-        setContentView(R.layout.intro_layout);
+        if (AndroidUtilities.isTablet()) {
+            setContentView(R.layout.intro_layout_tablet);
+        } else {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            setContentView(R.layout.intro_layout);
+        }
 
         if (LocaleController.isRTL) {
             icons = new int[] {
@@ -103,7 +115,13 @@ public class IntroActivity extends ActionBarActivity {
         }
         viewPager = (ViewPager)findViewById(R.id.intro_view_pager);
         TextView startMessagingButton = (TextView) findViewById(R.id.start_messaging_button);
-        startMessagingButton.setText(LocaleController.getString("StartMessaging", R.string.StartMessaging));
+        startMessagingButton.setText(LocaleController.getString("StartMessaging", R.string.StartMessaging).toUpperCase());
+        if (Build.VERSION.SDK_INT >= 21) {
+            StateListAnimator animator = new StateListAnimator();
+            animator.addState(new int[] {android.R.attr.state_pressed}, ObjectAnimator.ofFloat(startMessagingButton, "translationZ", AndroidUtilities.dp(2), AndroidUtilities.dp(4)).setDuration(200));
+            animator.addState(new int[] {}, ObjectAnimator.ofFloat(startMessagingButton, "translationZ", AndroidUtilities.dp(4), AndroidUtilities.dp(2)).setDuration(200));
+            startMessagingButton.setStateListAnimator(animator);
+        }
         topImage1 = (ImageView)findViewById(R.id.icon_image1);
         topImage2 = (ImageView)findViewById(R.id.icon_image2);
         bottomPages = (ViewGroup)findViewById(R.id.bottom_pages);
@@ -194,15 +212,14 @@ public class IntroActivity extends ActionBarActivity {
                     return;
                 }
                 startPressed = true;
-                Intent intent2 = new Intent(IntroActivity.this, LoginActivity.class);
+                Intent intent2 = new Intent(IntroActivity.this, LaunchActivity.class);
+                intent2.putExtra("fromIntro", true);
                 startActivity(intent2);
                 finish();
             }
         });
 
         justCreated = true;
-
-        getSupportActionBar().hide();
     }
 
     @Override
@@ -218,6 +235,14 @@ public class IntroActivity extends ActionBarActivity {
             }
             justCreated = false;
         }
+        AndroidUtilities.checkForCrashes(this);
+        AndroidUtilities.checkForUpdates(this);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        AndroidUtilities.unregisterUpdates();
     }
 
     private class IntroAdapter extends PagerAdapter {
@@ -234,7 +259,7 @@ public class IntroActivity extends ActionBarActivity {
             container.addView(view, 0);
 
             headerTextView.setText(getString(titles[position]));
-            messageTextView.setText(Html.fromHtml(getString(messages[position])));
+            messageTextView.setText(AndroidUtilities.replaceTags(getString(messages[position])));
 
             return view;
         }
@@ -278,6 +303,13 @@ public class IntroActivity extends ActionBarActivity {
 
         @Override
         public void startUpdate(View arg0) {
+        }
+
+        @Override
+        public void unregisterDataSetObserver(DataSetObserver observer) {
+            if (observer != null) {
+                super.unregisterDataSetObserver(observer);
+            }
         }
     }
 }

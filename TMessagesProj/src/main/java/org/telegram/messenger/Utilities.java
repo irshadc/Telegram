@@ -1,56 +1,32 @@
 /*
- * This is the source code of Telegram for Android v. 1.3.2.
+ * This is the source code of Telegram for Android v. 2.x.x.
  * It is licensed under GNU GPL v. 2 or later.
  * You should have received a copy of the license in this archive (see LICENSE).
  *
- * Copyright Nikolai Kudashov, 2013.
+ * Copyright Nikolai Kudashov, 2013-2015.
  */
 
 package org.telegram.messenger;
 
-import android.app.Activity;
-import android.app.ProgressDialog;
-import android.content.ContentUris;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.graphics.Point;
-import android.graphics.Typeface;
-import android.net.Uri;
-import android.os.Build;
-import android.os.Environment;
-import android.provider.DocumentsContract;
-import android.provider.MediaStore;
-import android.text.Html;
-import android.text.SpannableStringBuilder;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.util.Base64;
-import android.view.Display;
-import android.view.View;
-import android.view.WindowManager;
-import android.view.inputmethod.InputMethodManager;
-
-import org.telegram.ui.ApplicationLoader;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.channels.FileChannel;
 import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.PublicKey;
+import java.security.SecureRandom;
 import java.security.spec.RSAPublicKeySpec;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
-import java.util.Hashtable;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
@@ -59,16 +35,14 @@ import java.util.zip.GZIPOutputStream;
 import javax.crypto.Cipher;
 
 public class Utilities {
-    public static int statusBarHeight = 0;
-    public static float density = 1;
-    public static Point displaySize = new Point();
+
     public static Pattern pattern = Pattern.compile("[0-9]+");
-    private final static Integer lock = 1;
+    public static SecureRandom random = new SecureRandom();
 
-    private static boolean waitingForSms = false;
-    private static final Integer smsLock = 2;
+    private static byte[] decompressBuffer;
+    private static ByteArrayOutputStreamExpand decompressStream;
 
-    public static ArrayList<String> goodPrimes = new ArrayList<String>();
+    public static ArrayList<String> goodPrimes = new ArrayList<>();
 
     public static class TPFactorizedValue {
         public long p, q;
@@ -76,34 +50,23 @@ public class Utilities {
 
     public static volatile DispatchQueue stageQueue = new DispatchQueue("stageQueue");
     public static volatile DispatchQueue globalQueue = new DispatchQueue("globalQueue");
-
-    public static int[] arrColors = {0xffee4928, 0xff41a903, 0xffe09602, 0xff0f94ed, 0xff8f3bf7, 0xfffc4380, 0xff00a1c4, 0xffeb7002};
-    public static int[] arrUsersAvatars = {
-            R.drawable.user_red,
-            R.drawable.user_green,
-            R.drawable.user_yellow,
-            R.drawable.user_blue,
-            R.drawable.user_violet,
-            R.drawable.user_pink,
-            R.drawable.user_aqua,
-            R.drawable.user_orange};
-
-    public static int[] arrGroupsAvatars = {
-            R.drawable.group_green,
-            R.drawable.group_red,
-            R.drawable.group_blue,
-            R.drawable.group_yellow};
-
-    public static int externalCacheNotAvailableState = 0;
+    public static volatile DispatchQueue searchQueue = new DispatchQueue("searchQueue");
+    public static volatile DispatchQueue phoneBookQueue = new DispatchQueue("photoBookQueue");
 
     final protected static char[] hexArray = "0123456789ABCDEF".toCharArray();
 
-    private static final Hashtable<String, Typeface> cache = new Hashtable<String, Typeface>();
-
-    public static ProgressDialog progressDialog;
-
     static {
-        density = ApplicationLoader.applicationContext.getResources().getDisplayMetrics().density;
+        try {
+            File URANDOM_FILE = new File("/dev/urandom");
+            FileInputStream sUrandomIn = new FileInputStream(URANDOM_FILE);
+            byte[] buffer = new byte[1024];
+            sUrandomIn.read(buffer);
+            sUrandomIn.close();
+            random.setSeed(buffer);
+        } catch (Exception e) {
+            FileLog.e("tmessages", e);
+        }
+
         SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("primes", Context.MODE_PRIVATE);
         String primes = preferences.getString("primes", null);
         if (primes == null) {
@@ -113,10 +76,11 @@ public class Utilities {
                 byte[] bytes = Base64.decode(primes, Base64.DEFAULT);
                 if (bytes != null) {
                     SerializedData data = new SerializedData(bytes);
-                    int count = data.readInt32();
+                    int count = data.readInt32(false);
                     for (int a = 0; a < count; a++) {
-                        goodPrimes.add(data.readString());
+                        goodPrimes.add(data.readString(false));
                     }
+                    data.cleanup();
                 }
             } catch (Exception e) {
                 FileLog.e("tmessages", e);
@@ -124,34 +88,41 @@ public class Utilities {
                 goodPrimes.add("C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C3720FD51F69458705AC68CD4FE6B6B13ABDC9746512969328454F18FAF8C595F642477FE96BB2A941D5BCD1D4AC8CC49880708FA9B378E3C4F3A9060BEE67CF9A4A4A695811051907E162753B56B0F6B410DBA74D8A84B2A14B3144E0EF1284754FD17ED950D5965B4B9DD46582DB1178D169C6BC465B0D6FF9CA3928FEF5B9AE4E418FC15E83EBEA0F87FA9FF5EED70050DED2849F47BF959D956850CE929851F0D8115F635B105EE2E4E15D04B2454BF6F4FADF034B10403119CD8E3B92FCC5B");
             }
         }
-
-        checkDisplaySize();
     }
 
     public native static long doPQNative(long _what);
-    public native static byte[] aesIgeEncryption(byte[] _what, byte[] _key, byte[] _iv, boolean encrypt, boolean changeIv, int len);
-    public native static void aesIgeEncryption2(ByteBuffer _what, byte[] _key, byte[] _iv, boolean encrypt, boolean changeIv, int len);
 
-    public static boolean isWaitingForSms() {
-        boolean value = false;
-        synchronized (smsLock) {
-            value = waitingForSms;
-        }
-        return value;
-    }
+    public native static void loadBitmap(String path, Bitmap bitmap, int scale, int width, int height, int stride);
 
-    public static void setWaitingForSms(boolean value) {
-        synchronized (smsLock) {
-            waitingForSms = value;
-        }
+    public native static int pinBitmap(Bitmap bitmap);
+
+    public native static void blurBitmap(Object bitmap, int radius, int unpin);
+
+    public native static void calcCDT(ByteBuffer hsvBuffer, int width, int height, ByteBuffer buffer);
+
+    public native static Bitmap loadWebpImage(ByteBuffer buffer, int len, BitmapFactory.Options options);
+
+    public native static int convertVideoFrame(ByteBuffer src, ByteBuffer dest, int destFormat, int width, int height, int padding, int swap);
+
+    private native static void aesIgeEncryption(ByteBuffer buffer, byte[] key, byte[] iv, boolean encrypt, int offset, int length);
+
+    public static void aesIgeEncryption(ByteBuffer buffer, byte[] key, byte[] iv, boolean encrypt, boolean changeIv, int offset, int length) {
+        aesIgeEncryption(buffer, key, changeIv ? iv : iv.clone(), encrypt, offset, length);
     }
 
     public static Integer parseInt(String value) {
+        if (value == null) {
+            return 0;
+        }
         Integer val = 0;
-        Matcher matcher = pattern.matcher(value);
-        if (matcher.find()) {
-            String num = matcher.group(0);
-            val = Integer.parseInt(num);
+        try {
+            Matcher matcher = pattern.matcher(value);
+            if (matcher.find()) {
+                String num = matcher.group(0);
+                val = Integer.parseInt(num);
+            }
+        } catch (Exception e) {
+            FileLog.e("tmessages", e);
         }
         return val;
     }
@@ -164,19 +135,13 @@ public class Utilities {
         return null;
     }
 
-    public static File getCacheDir() {
-        if (externalCacheNotAvailableState == 1 || externalCacheNotAvailableState == 0 && Environment.getExternalStorageState().startsWith(Environment.MEDIA_MOUNTED)) {
-            externalCacheNotAvailableState = 1;
-            return ApplicationLoader.applicationContext.getExternalCacheDir();
-        }
-        externalCacheNotAvailableState = 2;
-        return ApplicationLoader.applicationContext.getCacheDir();
-    }
-
     public static String bytesToHex(byte[] bytes) {
+        if (bytes == null) {
+            return "";
+        }
         char[] hexChars = new char[bytes.length * 2];
         int v;
-        for ( int j = 0; j < bytes.length; j++ ) {
+        for (int j = 0; j < bytes.length; j++) {
             v = bytes[j] & 0xFF;
             hexChars[j * 2] = hexArray[v >>> 4];
             hexChars[j * 2 + 1] = hexArray[v & 0x0F];
@@ -184,12 +149,16 @@ public class Utilities {
         return new String(hexChars);
     }
 
-    public static int dp(int value) {
-        return (int)(density * value);
-    }
-
-    public static int dpf(float value) {
-        return (int)Math.ceil(density * value);
+    public static byte[] hexToBytes(String hex) {
+        if (hex == null) {
+            return null;
+        }
+        int len = hex.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4) + Character.digit(hex.charAt(i + 1), 16));
+        }
+        return data;
     }
 
     public static boolean isGoodPrime(byte[] prime, int g) {
@@ -199,13 +168,6 @@ public class Utilities {
 
         if (prime.length != 256 || prime[0] >= 0) {
             return false;
-        }
-
-        String hex = bytesToHex(prime);
-        for (String cached : goodPrimes) {
-            if (cached.equals(hex)) {
-                return true;
-            }
         }
 
         BigInteger dhBI = new BigInteger(1, prime);
@@ -240,6 +202,13 @@ public class Utilities {
             }
         }
 
+        String hex = bytesToHex(prime);
+        for (String cached : goodPrimes) {
+            if (cached.equals(hex)) {
+                return true;
+            }
+        }
+
         BigInteger dhBI2 = dhBI.subtract(BigInteger.valueOf(1)).divide(BigInteger.valueOf(2));
         if (!dhBI.isProbablePrime(30) || !dhBI2.isProbablePrime(30)) {
             return false;
@@ -257,6 +226,7 @@ public class Utilities {
                         data.writeString(pr);
                     }
                     byte[] bytes = data.toByteArray();
+                    data.cleanup();
                     SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("primes", Context.MODE_PRIVATE);
                     SharedPreferences.Editor editor = preferences.edit();
                     editor.putString("primes", Base64.encodeToString(bytes, Base64.DEFAULT));
@@ -299,6 +269,19 @@ public class Utilities {
         }
     }
 
+    public static boolean arraysEquals(byte[] arr1, int offset1, byte[] arr2, int offset2) {
+        if (arr1 == null || arr2 == null || offset1 < 0 || offset2 < 0 || arr1.length - offset1 != arr2.length - offset2 || arr1.length - offset1 < 0 || arr2.length - offset2 < 0) {
+            return false;
+        }
+        boolean result = true;
+        for (int a = offset1; a < arr1.length; a++) {
+            if (arr1[a + offset1] != arr2[a + offset2]) {
+                result = false;
+            }
+        }
+        return result;
+    }
+
     public static byte[] computeSHA1(byte[] convertme, int offset, int len) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-1");
@@ -311,26 +294,36 @@ public class Utilities {
     }
 
     public static byte[] computeSHA1(ByteBuffer convertme, int offset, int len) {
+        int oldp = convertme.position();
+        int oldl = convertme.limit();
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-1");
-            int oldp = convertme.position();
-            int oldl = convertme.limit();
             convertme.position(offset);
             convertme.limit(len);
             md.update(convertme);
-            convertme.position(oldp);
-            convertme.limit(oldl);
             return md.digest();
         } catch (Exception e) {
             FileLog.e("tmessages", e);
+        } finally {
+            convertme.limit(oldl);
+            convertme.position(oldp);
         }
-        return null;
+        return new byte[0];
+    }
+
+    public static byte[] computeSHA1(ByteBuffer convertme) {
+        return computeSHA1(convertme, 0, convertme.limit());
     }
 
     public static byte[] computeSHA1(byte[] convertme) {
+        return computeSHA1(convertme, 0, convertme.length);
+    }
+
+    public static byte[] computeSHA256(byte[] convertme, int offset, int len) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-1");
-            return md.digest(convertme);
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(convertme, offset, len);
+            return md.digest();
         } catch (Exception e) {
             FileLog.e("tmessages", e);
         }
@@ -351,93 +344,45 @@ public class Utilities {
         return null;
     }
 
-    public static byte[] longToBytes(long x) {
-        ByteBuffer buffer = ByteBuffer.allocate(8);
-        buffer.putLong(x);
-        return buffer.array();
-    }
-
     public static long bytesToLong(byte[] bytes) {
-        ByteBuffer buffer = ByteBuffer.allocate(8);
-        buffer.order(ByteOrder.LITTLE_ENDIAN);
-        buffer.put(bytes);
-        buffer.flip();
-        return buffer.getLong();
+        return ((long) bytes[7] << 56) + (((long) bytes[6] & 0xFF) << 48) + (((long) bytes[5] & 0xFF) << 40) + (((long) bytes[4] & 0xFF) << 32)
+                + (((long) bytes[3] & 0xFF) << 24) + (((long) bytes[2] & 0xFF) << 16) + (((long) bytes[1] & 0xFF) << 8) + ((long) bytes[0] & 0xFF);
     }
 
-    public static int bytesToInt(byte[] bytes) {
-        ByteBuffer buffer = ByteBuffer.allocate(4);
-        buffer.order(ByteOrder.LITTLE_ENDIAN);
-        buffer.put(bytes);
-        buffer.flip();
-        return buffer.getInt();
-    }
-
-    public static MessageKeyData generateMessageKeyData(byte[] authKey, byte[] messageKey, boolean incoming) {
-        MessageKeyData keyData = new MessageKeyData();
-        if (authKey == null || authKey.length == 0) {
-            keyData.aesIv = null;
-            keyData.aesKey = null;
-            return keyData;
-        }
-
-        int x = incoming ? 8 : 0;
-
-        SerializedData data = new SerializedData();
-        data.writeRaw(messageKey);
-        data.writeRaw(authKey, x, 32);
-        byte[] sha1_a = Utilities.computeSHA1(data.toByteArray());
-
-        data = new SerializedData();
-        data.writeRaw(authKey, 32 + x, 16);
-        data.writeRaw(messageKey);
-        data.writeRaw(authKey, 48 + x, 16);
-        byte[] sha1_b = Utilities.computeSHA1(data.toByteArray());
-
-        data = new SerializedData();
-        data.writeRaw(authKey, 64 + x, 32);
-        data.writeRaw(messageKey);
-        byte[] sha1_c = Utilities.computeSHA1(data.toByteArray());
-
-        data = new SerializedData();
-        data.writeRaw(messageKey);
-        data.writeRaw(authKey, 96 + x, 32);
-        byte[] sha1_d = Utilities.computeSHA1(data.toByteArray());
-
-        SerializedData aesKey = new SerializedData();
-        aesKey.writeRaw(sha1_a, 0, 8);
-        aesKey.writeRaw(sha1_b, 8, 12);
-        aesKey.writeRaw(sha1_c, 4, 12);
-        keyData.aesKey = aesKey.toByteArray();
-
-        SerializedData aesIv = new SerializedData();
-        aesIv.writeRaw(sha1_a, 8, 12);
-        aesIv.writeRaw(sha1_b, 0, 8);
-        aesIv.writeRaw(sha1_c, 16, 4);
-        aesIv.writeRaw(sha1_d, 0, 8);
-        keyData.aesIv = aesIv.toByteArray();
-
-        return keyData;
-    }
-
-    public static TLObject decompress(byte[] data, TLObject parentObject) {
-        final int BUFFER_SIZE = 512;
+    public static TLObject decompress(byte[] data, TLObject parentObject, boolean exception) {
+        final int BUFFER_SIZE = 16384;
         ByteArrayInputStream is = new ByteArrayInputStream(data);
         GZIPInputStream gis;
+        SerializedData stream = null;
         try {
-            gis = new GZIPInputStream(is, BUFFER_SIZE);
-            ByteArrayOutputStream bytesOutput = new ByteArrayOutputStream();
-            data = new byte[BUFFER_SIZE];
-            int bytesRead;
-            while ((bytesRead = gis.read(data)) != -1) {
-                bytesOutput.write(data, 0, bytesRead);
+            if (decompressBuffer == null) {
+                decompressBuffer = new byte[BUFFER_SIZE];
+                decompressStream = new ByteArrayOutputStreamExpand(BUFFER_SIZE);
             }
-            gis.close();
-            is.close();
-            SerializedData stream = new SerializedData(bytesOutput.toByteArray());
-            return TLClassStore.Instance().TLdeserialize(stream, stream.readInt32(), parentObject);
+            decompressStream.reset();
+            gis = new GZIPInputStream(is, BUFFER_SIZE);
+            int bytesRead;
+            while ((bytesRead = gis.read(decompressBuffer)) != -1) {
+                decompressStream.write(decompressBuffer, 0, bytesRead);
+            }
+            try {
+                gis.close();
+            } catch (Exception e) {
+                FileLog.e("tmessages", e);
+            }
+            try {
+                is.close();
+            } catch (Exception e) {
+                FileLog.e("tmessages", e);
+            }
+            stream = new SerializedData(decompressStream.toByteArray());
         } catch (IOException e) {
             FileLog.e("tmessages", e);
+        }
+        if (stream != null) {
+            TLObject object = ConnectionsManager.getInstance().deserialize(parentObject, stream, exception);
+            stream.cleanup();
+            return object;
         }
         return null;
     }
@@ -456,182 +401,20 @@ public class Utilities {
             packedData = bytesStream.toByteArray();
         } catch (IOException e) {
             FileLog.e("tmessages", e);
+        } finally {
+            try {
+                bytesStream.close();
+            } catch (Exception e) {
+                FileLog.e("tmessages", e);
+            }
         }
         return packedData;
     }
 
-    public static Typeface getTypeface(String assetPath) {
-        synchronized (cache) {
-            if (!cache.containsKey(assetPath)) {
-                try {
-                    Typeface t = Typeface.createFromAsset(ApplicationLoader.applicationContext.getAssets(),
-                            assetPath);
-                    cache.put(assetPath, t);
-                } catch (Exception e) {
-                    FileLog.e("Typefaces", "Could not get typeface '" + assetPath + "' because " + e.getMessage());
-                    return null;
-                }
-            }
-            return cache.get(assetPath);
-        }
-    }
-
-    public static void showKeyboard(View view) {
-        if (view == null) {
-            return;
-        }
-        InputMethodManager inputManager = (InputMethodManager)view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        inputManager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
-
-        ((InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
-    }
-
-    public static boolean isKeyboardShowed(View view) {
-        if (view == null) {
-            return false;
-        }
-        InputMethodManager inputManager = (InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        return inputManager.isActive(view);
-    }
-
-    public static void hideKeyboard(View view) {
-        if (view == null) {
-            return;
-        }
-        InputMethodManager imm = (InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (!imm.isActive()) {
-            return;
-        }
-        imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
-    }
-
-    public static void ShowProgressDialog(final Activity activity, final String message) {
-        activity.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                if(!activity.isFinishing()) {
-                    progressDialog = new ProgressDialog(activity);
-                    if (message != null) {
-                        progressDialog.setMessage(message);
-                    }
-                    progressDialog.setCanceledOnTouchOutside(false);
-                    progressDialog.setCancelable(false);
-                    progressDialog.show();
-                }
-            }
-        });
-    }
-
-    public static void checkDisplaySize() {
-        try {
-            WindowManager manager = (WindowManager)ApplicationLoader.applicationContext.getSystemService(Context.WINDOW_SERVICE);
-            if (manager != null) {
-                Display display = manager.getDefaultDisplay();
-                if (display != null) {
-                    if(android.os.Build.VERSION.SDK_INT < 13) {
-                        displaySize.set(display.getWidth(), display.getHeight());
-                    } else {
-                        display.getSize(displaySize);
-                    }
-                    FileLog.e("tmessages", "display size = " + displaySize.x + " " + displaySize.y);
-                }
-            }
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-        }
-    }
-
-    public static void HideProgressDialog(Activity activity) {
-        activity.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                if (progressDialog != null) {
-                    progressDialog.dismiss();
-                }
-            }
-        });
-    }
-
-    public static boolean copyFile(File sourceFile, File destFile) throws IOException {
-        if(!destFile.exists()) {
-            destFile.createNewFile();
-        }
-        FileChannel source = null;
-        FileChannel destination = null;
-        boolean result = true;
-        try {
-            source = new FileInputStream(sourceFile).getChannel();
-            destination = new FileOutputStream(destFile).getChannel();
-            destination.transferFrom(source, 0, source.size());
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-            result = false;
-        } finally {
-            if(source != null) {
-                source.close();
-            }
-            if(destination != null) {
-                destination.close();
-            }
-        }
-        return result;
-    }
-
-    public static void RunOnUIThread(Runnable runnable) {
-        synchronized (lock) {
-            ApplicationLoader.applicationHandler.post(runnable);
-        }
-    }
-
-    public static int getColorIndex(int id) {
-        int[] arr;
-        if (id >= 0) {
-            arr = arrUsersAvatars;
-        } else {
-            arr = arrGroupsAvatars;
-        }
-        try {
-            String str;
-            if (id >= 0) {
-                str = String.format(Locale.US, "%d%d", id, UserConfig.clientUserId);
-            } else {
-                str = String.format(Locale.US, "%d", id);
-            }
-            if (str.length() > 15) {
-                str = str.substring(0, 15);
-            }
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(str.getBytes());
-            int b = digest[Math.abs(id % 16)];
-            if (b < 0) {
-                b += 256;
-            }
-            return Math.abs(b) % arr.length;
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-        }
-        return id % arr.length;
-    }
-
-    public static int getColorForId(int id) {
-        if (id / 1000 == 333) {
-            return 0xff0f94ed;
-        }
-        return arrColors[getColorIndex(id)];
-    }
-
-    public static int getUserAvatarForId(int id) {
-        if (id / 1000 == 333) {
-            return R.drawable.telegram_avatar;
-        }
-        return arrUsersAvatars[getColorIndex(id)];
-    }
-
-    public static int getGroupAvatarForId(int id) {
-        return arrGroupsAvatars[getColorIndex(-id)];
-    }
-
     public static String MD5(String md5) {
+        if (md5 == null) {
+            return null;
+        }
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
             byte[] array = md.digest(md5.getBytes());
@@ -644,229 +427,5 @@ public class Utilities {
             FileLog.e("tmessages", e);
         }
         return null;
-    }
-
-    public static void addMediaToGallery(String fromPath) {
-        if (fromPath == null) {
-            return;
-        }
-        File f = new File(fromPath);
-        Uri contentUri = Uri.fromFile(f);
-        addMediaToGallery(contentUri);
-    }
-
-    public static void addMediaToGallery(Uri uri) {
-        if (uri == null) {
-            return;
-        }
-        Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-        mediaScanIntent.setData(uri);
-        ApplicationLoader.applicationContext.sendBroadcast(mediaScanIntent);
-    }
-
-    private static File getAlbumDir() {
-        File storageDir = null;
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            storageDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), ApplicationLoader.applicationContext.getResources().getString(R.string.AppName));
-            if (storageDir != null) {
-                if (! storageDir.mkdirs()) {
-                    if (! storageDir.exists()){
-                        FileLog.d("tmessages", "failed to create directory");
-                        return null;
-                    }
-                }
-            }
-        } else {
-            FileLog.d("tmessages", "External storage is not mounted READ/WRITE.");
-        }
-
-        return storageDir;
-    }
-
-    public static String getPath(final Uri uri) {
-        final boolean isKitKat = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
-        if (isKitKat && DocumentsContract.isDocumentUri(ApplicationLoader.applicationContext, uri)) {
-            if (isExternalStorageDocument(uri)) {
-                final String docId = DocumentsContract.getDocumentId(uri);
-                final String[] split = docId.split(":");
-                final String type = split[0];
-                if ("primary".equalsIgnoreCase(type)) {
-                    return Environment.getExternalStorageDirectory() + "/" + split[1];
-                }
-            } else if (isDownloadsDocument(uri)) {
-                final String id = DocumentsContract.getDocumentId(uri);
-                final Uri contentUri = ContentUris.withAppendedId(Uri.parse("content://downloads/public_downloads"), Long.valueOf(id));
-                return getDataColumn(ApplicationLoader.applicationContext, contentUri, null, null);
-            } else if (isMediaDocument(uri)) {
-                final String docId = DocumentsContract.getDocumentId(uri);
-                final String[] split = docId.split(":");
-                final String type = split[0];
-
-                Uri contentUri = null;
-                if ("image".equals(type)) {
-                    contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
-                } else if ("video".equals(type)) {
-                    contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
-                } else if ("audio".equals(type)) {
-                    contentUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-                }
-
-                final String selection = "_id=?";
-                final String[] selectionArgs = new String[] {
-                        split[1]
-                };
-
-                return getDataColumn(ApplicationLoader.applicationContext, contentUri, selection, selectionArgs);
-            }
-        } else if ("content".equalsIgnoreCase(uri.getScheme())) {
-            return getDataColumn(ApplicationLoader.applicationContext, uri, null, null);
-        } else if ("file".equalsIgnoreCase(uri.getScheme())) {
-            return uri.getPath();
-        }
-
-        return null;
-    }
-
-    public static String getDataColumn(Context context, Uri uri, String selection, String[] selectionArgs) {
-
-        Cursor cursor = null;
-        final String column = "_data";
-        final String[] projection = {
-                column
-        };
-
-        try {
-            cursor = context.getContentResolver().query(uri, projection, selection, selectionArgs, null);
-            if (cursor != null && cursor.moveToFirst()) {
-                final int column_index = cursor.getColumnIndexOrThrow(column);
-                return cursor.getString(column_index);
-            }
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-        return null;
-    }
-
-    public static boolean isExternalStorageDocument(Uri uri) {
-        return "com.android.externalstorage.documents".equals(uri.getAuthority());
-    }
-
-    public static boolean isDownloadsDocument(Uri uri) {
-        return "com.android.providers.downloads.documents".equals(uri.getAuthority());
-    }
-
-    public static boolean isMediaDocument(Uri uri) {
-        return "com.android.providers.media.documents".equals(uri.getAuthority());
-    }
-
-    public static File generatePicturePath() {
-        try {
-            File storageDir = getAlbumDir();
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-            String imageFileName = "IMG_" + timeStamp + "_";
-            return File.createTempFile(imageFileName, ".jpg", storageDir);
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-        }
-        return null;
-    }
-
-    public static CharSequence generateSearchName(String name, String name2, String q) {
-        if (name == null && name2 == null) {
-            return "";
-        }
-        int index;
-        SpannableStringBuilder builder = new SpannableStringBuilder();
-        String wholeString = name;
-        if (wholeString == null || wholeString.length() == 0) {
-            wholeString = name2;
-        } else if (name2 != null && name2.length() != 0) {
-            wholeString += " " + name2;
-        }
-        wholeString = wholeString.trim();
-        String[] args = wholeString.split(" ");
-
-        for (String arg : args) {
-            String str = arg;
-            if (str != null) {
-                String lower = str.toLowerCase();
-                if (lower.startsWith(q)) {
-                    if (builder.length() != 0) {
-                        builder.append(" ");
-                    }
-                    String query = str.substring(0, q.length());
-                    builder.append(Html.fromHtml("<font color=\"#357aa8\">" + query + "</font>"));
-                    str = str.substring(q.length());
-                    builder.append(str);
-                } else {
-                    if (builder.length() != 0) {
-                        builder.append(" ");
-                    }
-                    builder.append(str);
-                }
-            }
-        }
-        return builder;
-    }
-
-    public static File generateVideoPath() {
-        try {
-            File storageDir = getAlbumDir();
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-            String imageFileName = "VID_" + timeStamp + "_";
-            return File.createTempFile(imageFileName, ".mp4", storageDir);
-        } catch (Exception e) {
-            FileLog.e("tmessages", e);
-        }
-        return null;
-    }
-
-    public static String formatName(String firstName, String lastName) {
-        String result = firstName;
-        if (result == null || result.length() == 0) {
-            result = lastName;
-        } else if (result.length() != 0 && lastName.length() != 0) {
-            result += " " + lastName;
-        }
-        return result.trim();
-    }
-
-    public static String formatFileSize(long size) {
-        if (size < 1024) {
-            return String.format("%d B", size);
-        } else if (size < 1024 * 1024) {
-            return String.format("%.1f KB", size / 1024.0f);
-        } else if (size < 1024 * 1024 * 1024) {
-            return String.format("%.1f MB", size / 1024.0f / 1024.0f);
-        } else {
-            return String.format("%.1f GB", size / 1024.0f / 1024.0f / 1024.0f);
-        }
-    }
-
-    public static byte[] decodeQuotedPrintable(final byte[] bytes) {
-        if (bytes == null) {
-            return null;
-        }
-        final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        for (int i = 0; i < bytes.length; i++) {
-            final int b = bytes[i];
-            if (b == '=') {
-                try {
-                    final int u = Character.digit((char) bytes[++i], 16);
-                    final int l = Character.digit((char) bytes[++i], 16);
-                    buffer.write((char) ((u << 4) + l));
-                } catch (Exception e) {
-                    FileLog.e("tmessages", e);
-                    return null;
-                }
-            } else {
-                buffer.write(b);
-            }
-        }
-        return buffer.toByteArray();
     }
 }

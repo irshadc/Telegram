@@ -5,7 +5,7 @@ jfieldID queryArgsCountField;
 jint sqliteOnJNILoad(JavaVM *vm, void *reserved, JNIEnv *env) {
 	jclass class = (*env)->FindClass(env, "org/telegram/SQLite/SQLitePreparedStatement");
 	queryArgsCountField = (*env)->GetFieldID(env, class, "queryArgsCount", "I");
-	return JNI_VERSION_1_4;
+	return JNI_VERSION_1_6;
 }
 
 int Java_org_telegram_SQLite_SQLitePreparedStatement_step(JNIEnv* env, jobject object, int statementHandle) {
@@ -62,19 +62,13 @@ void Java_org_telegram_SQLite_SQLitePreparedStatement_finalize(JNIEnv *env, jobj
     }
 }
 
-void Java_org_telegram_SQLite_SQLitePreparedStatement_bindByteArray(JNIEnv *env, jobject object, int statementHandle, int index, jbyteArray value) {
+void Java_org_telegram_SQLite_SQLitePreparedStatement_bindByteBuffer(JNIEnv *env, jobject object, int statementHandle, int index, jobject value, int length) {
 	sqlite3_stmt *handle = (sqlite3_stmt *)statementHandle;
-
-    const void *buf = (*env)->GetByteArrayElements(env, value, 0);
-    int length = (*env)->GetArrayLength(env, value);
-
+    jbyte *buf = (*env)->GetDirectBufferAddress(env, value);
+    
 	int errcode = sqlite3_bind_blob(handle, index, buf, length, SQLITE_STATIC);
     if (SQLITE_OK != errcode) {
     	throw_sqlite3_exception(env, sqlite3_db_handle(handle), errcode);
-    }
-    
-    if (buf != 0) {
-        (*env)->ReleaseByteArrayElements(env, value, buf, 0);
     }
 }
 

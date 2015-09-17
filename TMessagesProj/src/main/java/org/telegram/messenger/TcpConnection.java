@@ -1,9 +1,9 @@
 /*
- * This is the source code of Telegram for Android v. 1.3.2.
+ * This is the source code of Telegram for Android v. 2.x.x.
  * It is licensed under GNU GPL v. 2 or later.
  * You should have received a copy of the license in this archive (see LICENSE).
  *
- * Copyright Nikolai Kudashov, 2013.
+ * Copyright Nikolai Kudashov, 2013-2015.
  */
 
 package org.telegram.messenger;
@@ -18,9 +18,9 @@ import java.util.TimerTask;
 
 import jawnae.pyronet.PyroClient;
 import jawnae.pyronet.PyroSelector;
-import jawnae.pyronet.PyroClientAdapter;
 
-public class TcpConnection extends PyroClientAdapter {
+public class TcpConnection extends ConnectionContext {
+
     public enum TcpConnectionState {
         TcpConnectionStageIdle,
         TcpConnectionStageConnecting,
@@ -29,12 +29,14 @@ public class TcpConnection extends PyroClientAdapter {
         TcpConnectionStageSuspended
     }
 
-    public abstract static interface TcpConnectionDelegate {
-        public abstract void tcpConnectionClosed(TcpConnection connection);
-        public abstract void tcpConnectionConnected(TcpConnection connection);
-        public abstract void tcpConnectionQuiackAckReceived(TcpConnection connection, int ack);
-        public abstract void tcpConnectionReceivedData(TcpConnection connection, ByteBufferDesc data, int length);
-        public abstract void tcpConnectionProgressChanged(TcpConnection connection, long messageId, int currentSize, int length);
+    public interface TcpConnectionDelegate {
+        void tcpConnectionClosed(TcpConnection connection);
+
+        void tcpConnectionConnected(TcpConnection connection);
+
+        void tcpConnectionQuiackAckReceived(TcpConnection connection, int ack);
+
+        void tcpConnectionReceivedData(TcpConnection connection, ByteBufferDesc data, int length);
     }
 
     private static PyroSelector selector;
@@ -43,15 +45,15 @@ public class TcpConnection extends PyroClientAdapter {
     public volatile int channelToken = 0;
     private String hostAddress;
     private int hostPort;
+    private int currentAddressFlag;
     private int datacenterId;
     private int failedConnectionCount;
     public TcpConnectionDelegate delegate;
     private ByteBufferDesc restOfTheData;
-    private long lastMessageId = 0;
     private boolean hasSomeDataSinceLastConnect = false;
     private int willRetryConnectCount = 5;
     private boolean isNextPort = false;
-    private final Integer timerSync = 1;
+    private final Object timerSync = new Object();
     private boolean wasConnected;
     private int lastPacketLength;
 
@@ -60,19 +62,19 @@ public class TcpConnection extends PyroClientAdapter {
     private boolean firstPacket;
 
     private Timer reconnectTimer;
-    private boolean tryWithNoNetworkAnyway = false;
 
     public TcpConnection(int did) {
         if (selector == null) {
             selector = new PyroSelector();
             selector.spawnNetworkThread("network thread");
-            BuffersStorage storage = BuffersStorage.getInstance();
+            BuffersStorage.getInstance();
         }
         datacenterId = did;
         connectionState = TcpConnectionState.TcpConnectionStageIdle;
     }
 
     static volatile Integer nextChannelToken = 1;
+
     static int generateChannelToken() {
         return nextChannelToken++;
     }
@@ -82,6 +84,19 @@ public class TcpConnection extends PyroClientAdapter {
     }
 
     public void connect() {
+        if (!ConnectionsManager.isNetworkOnline()) {
+            if (delegate != null) {
+                final TcpConnectionDelegate finalDelegate = delegate;
+                Utilities.stageQueue.postRunnable(new Runnable() {
+                    @Override
+                    public void run() {
+                        finalDelegate.tcpConnectionClosed(TcpConnection.this);
+                    }
+                });
+            }
+            return;
+        }
+
         selector.scheduleTask(new Runnable() {
             @Override
             public void run() {
@@ -91,14 +106,32 @@ public class TcpConnection extends PyroClientAdapter {
 
                 connectionState = TcpConnectionState.TcpConnectionStageConnecting;
                 try {
-                    if(android.os.Build.VERSION.SDK_INT < 11) {
-                        if (!ConnectionsManager.isNetworkOnline() && !tryWithNoNetworkAnyway) {
-                            handleConnectionError(null);
-                            tryWithNoNetworkAnyway = true;
-                            return;
+                    Datacenter datacenter = ConnectionsManager.getInstance().datacenterWithId(datacenterId);
+                    boolean isIpv6 = ConnectionsManager.useIpv6Address();
+                    if (transportRequestClass == RPCRequest.RPCRequestClassDownloadMedia) {
+                        currentAddressFlag = 2;
+                        hostAddress = datacenter.getCurrentAddress(currentAddressFlag | (isIpv6 ? 1 : 0));
+                        if (hostAddress == null) {
+                            currentAddressFlag = 0;
+                            hostAddress = datacenter.getCurrentAddress(currentAddressFlag | (isIpv6 ? 1 : 0));
                         }
-                        tryWithNoNetworkAnyway = false;
+                        if (hostAddress == null && isIpv6) {
+                            currentAddressFlag = 2;
+                            hostAddress = datacenter.getCurrentAddress(currentAddressFlag);
+                            if (hostAddress == null) {
+                                currentAddressFlag = 0;
+                                hostAddress = datacenter.getCurrentAddress(currentAddressFlag);
+                            }
+                        }
+                    } else {
+                        currentAddressFlag = 0;
+                        hostAddress = datacenter.getCurrentAddress(currentAddressFlag | (isIpv6 ? 1 : 0));
+                        if (isIpv6 && hostAddress == null) {
+                            hostAddress = datacenter.getCurrentAddress(currentAddressFlag);
+                        }
                     }
+                    hostPort = datacenter.getCurrentPort(currentAddressFlag);
+
                     try {
                         synchronized (timerSync) {
                             if (reconnectTimer != null) {
@@ -109,10 +142,8 @@ public class TcpConnection extends PyroClientAdapter {
                     } catch (Exception e2) {
                         FileLog.e("tmessages", e2);
                     }
-                    Datacenter datacenter = ConnectionsManager.getInstance().datacenterWithId(datacenterId);
-                    hostAddress = datacenter.getCurrentAddress();
-                    hostPort = datacenter.getCurrentPort();
-                    FileLog.d("tmessages", String.format(TcpConnection.this + " Connecting (%s:%d)", hostAddress, hostPort));
+
+                    FileLog.d("tmessages", String.format(TcpConnection.this + " Connecting (%s:%d), connection class %d", hostAddress, hostPort, transportRequestClass));
                     firstPacket = true;
                     if (restOfTheData != null) {
                         BuffersStorage.getInstance().reuseFreeBuffer(restOfTheData);
@@ -128,10 +159,18 @@ public class TcpConnection extends PyroClientAdapter {
                     }
                     client = selector.connect(new InetSocketAddress(hostAddress, hostPort));
                     client.addListener(TcpConnection.this);
-                    if (isNextPort) {
-                        client.setTimeout(8000);
+                    if ((transportRequestClass & RPCRequest.RPCRequestClassPush) != 0) {
+                        if (isNextPort) {
+                            client.setTimeout(20000);
+                        } else {
+                            client.setTimeout(30000);
+                        }
                     } else {
-                        client.setTimeout(15000);
+                        if (isNextPort) {
+                            client.setTimeout(8000);
+                        } else {
+                            client.setTimeout(15000);
+                        }
                     }
                     selector.wakeup();
                 } catch (Exception e) {
@@ -152,7 +191,7 @@ public class TcpConnection extends PyroClientAdapter {
         } catch (Exception e2) {
             FileLog.e("tmessages", e2);
         }
-        connectionState =  TcpConnectionState.TcpConnectionStageReconnecting;
+        connectionState = TcpConnectionState.TcpConnectionStageReconnecting;
         if (delegate != null) {
             final TcpConnectionDelegate finalDelegate = delegate;
             Utilities.stageQueue.postRunnable(new Runnable() {
@@ -175,7 +214,7 @@ public class TcpConnection extends PyroClientAdapter {
             isNextPort = true;
             if (failedConnectionCount > willRetryConnectCount) {
                 Datacenter datacenter = ConnectionsManager.getInstance().datacenterWithId(datacenterId);
-                datacenter.nextAddressOrPort();
+                datacenter.nextAddressOrPort(currentAddressFlag);
                 failedConnectionCount = 0;
             }
         }
@@ -261,17 +300,16 @@ public class TcpConnection extends PyroClientAdapter {
         }
     }
 
-    public void resumeConnection() {
-
-    }
-
     private void reconnect() {
         suspendConnection(false);
         connectionState = TcpConnectionState.TcpConnectionStageReconnecting;
         connect();
     }
 
-    public void sendData(final byte[] data, final boolean reportAck, final boolean startResponseTimeout) {
+    public void sendData(final ByteBufferDesc buff, final boolean canReuse, final boolean reportAck) {
+        if (buff == null) {
+            return;
+        }
         selector.scheduleTask(new Runnable() {
             @Override
             public void run() {
@@ -282,12 +320,32 @@ public class TcpConnection extends PyroClientAdapter {
                 }
 
                 if (client == null || client.isDisconnected()) {
+                    if (canReuse) {
+                        BuffersStorage.getInstance().reuseFreeBuffer(buff);
+                    }
+                    if (BuildConfig.DEBUG) {
+                        FileLog.e("tmessages", TcpConnection.this + " disconnected, don't send data");
+                    }
                     return;
                 }
 
-                int packetLength = data.length / 4;
+                int bufferLen = buff.limit();
+                int packetLength = bufferLen / 4;
 
-                SerializedData buffer = new SerializedData();
+                if (packetLength < 0x7f) {
+                    bufferLen++;
+                } else {
+                    bufferLen += 4;
+                }
+                if (firstPacket) {
+                    bufferLen++;
+                }
+
+                ByteBufferDesc buffer = BuffersStorage.getInstance().getFreeBuffer(bufferLen);
+                if (firstPacket) {
+                    buffer.writeByte((byte) 0xef);
+                    firstPacket = false;
+                }
                 if (packetLength < 0x7f) {
                     if (reportAck) {
                         packetLength |= (1 << 7);
@@ -300,20 +358,15 @@ public class TcpConnection extends PyroClientAdapter {
                     }
                     buffer.writeInt32(packetLength);
                 }
-                buffer.writeRaw(data);
 
-                final byte[] packet = buffer.toByteArray();
-
-                ByteBuffer sendBuffer = ByteBuffer.allocate((firstPacket ? 1 : 0) + packet.length);
-                sendBuffer.rewind();
-                sendBuffer.order(ByteOrder.LITTLE_ENDIAN);
-                if (firstPacket) {
-                    sendBuffer.put((byte)0xef);
-                    firstPacket = false;
+                buffer.writeRaw(buff);
+                if (canReuse) {
+                    BuffersStorage.getInstance().reuseFreeBuffer(buff);
                 }
-                sendBuffer.put(packet);
-                sendBuffer.rewind();
-                client.write(sendBuffer);
+
+                buffer.rewind();
+
+                client.write(buffer);
             }
         });
     }
@@ -325,12 +378,10 @@ public class TcpConnection extends PyroClientAdapter {
         ByteBuffer parseLaterBuffer = null;
         if (restOfTheData != null) {
             if (lastPacketLength == 0) {
-                //FileLog.e("tmessages", this +  " write addition data to restOfTheData");
                 if (restOfTheData.capacity() - restOfTheData.position() >= buffer.limit()) {
                     restOfTheData.limit(restOfTheData.position() + buffer.limit());
                     restOfTheData.put(buffer);
                     buffer = restOfTheData.buffer;
-                    //FileLog.e("tmessages", this +  " no need to recreate buffer");
                 } else {
                     ByteBufferDesc newBuffer = BuffersStorage.getInstance().getFreeBuffer(restOfTheData.limit() + buffer.limit());
                     restOfTheData.rewind();
@@ -339,43 +390,23 @@ public class TcpConnection extends PyroClientAdapter {
                     buffer = newBuffer.buffer;
                     BuffersStorage.getInstance().reuseFreeBuffer(restOfTheData);
                     restOfTheData = newBuffer;
-                    //FileLog.e("tmessages", this +  " NEED to recreate buffer");
                 }
             } else {
-                //FileLog.e("tmessages", this +  " write buffer to restOfTheData buffer of len = " + lastPacketLength);
-                int len = 0;
+                int len;
                 if (lastPacketLength - restOfTheData.position() <= buffer.limit()) {
                     len = lastPacketLength - restOfTheData.position();
-                    //FileLog.e("tmessages", this +  " received buffer - OK!");
                 } else {
                     len = buffer.limit();
-                    //FileLog.e("tmessages", this +  " received buffer less than need");
                 }
                 int oldLimit = buffer.limit();
                 buffer.limit(len);
                 restOfTheData.put(buffer);
                 buffer.limit(oldLimit);
                 if (restOfTheData.position() != lastPacketLength) {
-                    //FileLog.e("tmessages", this +  " don't get much data to restOfTheData");
-                    if (lastMessageId != -1 && lastMessageId != 0) {
-                        if (delegate != null) {
-                            final TcpConnectionDelegate finalDelegate = delegate;
-                            final int arg2 = restOfTheData.position();
-                            final int arg3 = lastPacketLength;
-                            Utilities.stageQueue.postRunnable(new Runnable() {
-                                @Override
-                                public void run() {
-                                    finalDelegate.tcpConnectionProgressChanged(TcpConnection.this, lastMessageId, arg2, arg3);
-                                }
-                            });
-                        }
-                    }
                     return;
                 } else {
-                    //FileLog.e("tmessages", this +  " get much data to restOfTheData - OK!");
                     if (buffer.hasRemaining()) {
                         parseLaterBuffer = buffer;
-                        //FileLog.e("tmessages", this +  " something remain in the received buffer");
                     } else {
                         parseLaterBuffer = null;
                     }
@@ -391,7 +422,11 @@ public class TcpConnection extends PyroClientAdapter {
                 Datacenter datacenter = ConnectionsManager.getInstance().datacenterWithId(datacenterId);
                 datacenter.storeCurrentAddressAndPortNum();
                 isNextPort = false;
-                client.setTimeout(25000);
+                if ((transportRequestClass & RPCRequest.RPCRequestClassPush) != 0) {
+                    client.setTimeout(60000 * 15);
+                } else {
+                    client.setTimeout(25000);
+                }
             }
             hasSomeDataSinceLastConnect = true;
 
@@ -407,10 +442,8 @@ public class TcpConnection extends PyroClientAdapter {
                     restOfTheData.put(buffer);
                     restOfTheData.limit(restOfTheData.position());
                     lastPacketLength = 0;
-                    //FileLog.e("tmessages", this +  " 1 - size less than 4 bytes - write to free buffer");
                     if (reuseLater != null) {
                         BuffersStorage.getInstance().reuseFreeBuffer(reuseLater);
-                        //FileLog.e("tmessages", this +  " 1 - reuse later buffer1");
                     }
                     break;
                 }
@@ -430,11 +463,10 @@ public class TcpConnection extends PyroClientAdapter {
             }
 
             if (fByte != 0x7f) {
-                currentPacketLength = ((int)fByte) * 4;
+                currentPacketLength = ((int) fByte) * 4;
             } else {
                 buffer.reset();
                 if (buffer.remaining() < 4) {
-                    //FileLog.e("tmessages", this +  " 2 - size less than 4 bytes - write to free buffer");
                     if (restOfTheData == null || restOfTheData != null && restOfTheData.position() != 0) {
                         ByteBufferDesc reuseLater = restOfTheData;
                         restOfTheData = BuffersStorage.getInstance().getFreeBuffer(16384);
@@ -443,7 +475,6 @@ public class TcpConnection extends PyroClientAdapter {
                         lastPacketLength = 0;
                         if (reuseLater != null) {
                             BuffersStorage.getInstance().reuseFreeBuffer(reuseLater);
-                            //FileLog.e("tmessages", this +  " 2 - reuse later buffer1");
                         }
                     } else {
                         restOfTheData.position(restOfTheData.limit());
@@ -461,42 +492,18 @@ public class TcpConnection extends PyroClientAdapter {
 
             if (currentPacketLength < buffer.remaining()) {
                 FileLog.d("tmessages", TcpConnection.this + " Received message len " + currentPacketLength + " but packet larger " + buffer.remaining());
-                lastMessageId = 0;
             } else if (currentPacketLength == buffer.remaining()) {
                 FileLog.d("tmessages", TcpConnection.this + " Received message len " + currentPacketLength + " equal to packet size");
-                lastMessageId = 0;
             } else {
                 FileLog.d("tmessages", TcpConnection.this + " Received packet size less(" + buffer.remaining() + ") then message size(" + currentPacketLength + ")");
-                if (buffer.remaining() >= 152 && (transportRequestClass & RPCRequest.RPCRequestClassDownloadMedia) != 0) {
-                    if (lastMessageId == 0) {
-                        byte[] temp = new byte[152];
-                        buffer.get(temp);
-                        lastMessageId = ConnectionsManager.getInstance().needsToDecodeMessageIdFromPartialData(TcpConnection.this, temp);
-                    }
-                    if (lastMessageId != -1 && lastMessageId != 0) {
-                        if (delegate != null) {
-                            final TcpConnectionDelegate finalDelegate = delegate;
-                            final int arg2 = buffer.remaining();
-                            final int arg3 = currentPacketLength;
-                            Utilities.stageQueue.postRunnable(new Runnable() {
-                                @Override
-                                public void run() {
-                                    finalDelegate.tcpConnectionProgressChanged(TcpConnection.this, lastMessageId, arg2, arg3);
-                                }
-                            });
-                        }
-                    }
-                }
 
                 ByteBufferDesc reuseLater = null;
                 int len = currentPacketLength + (fByte != 0x7f ? 1 : 4);
                 if (restOfTheData != null && restOfTheData.capacity() < len) {
                     reuseLater = restOfTheData;
                     restOfTheData = null;
-                    //FileLog.e("tmessages", this +  " not enough space for len, recreate buffer = " + len);
                 }
                 if (restOfTheData == null) {
-                    //FileLog.e("tmessages", this +  " write to restOfTheData, get buffer len = " + len);
                     buffer.reset();
                     restOfTheData = BuffersStorage.getInstance().getFreeBuffer(len);
                     restOfTheData.put(buffer);
@@ -507,7 +514,6 @@ public class TcpConnection extends PyroClientAdapter {
                 lastPacketLength = len;
                 if (reuseLater != null) {
                     BuffersStorage.getInstance().reuseFreeBuffer(reuseLater);
-                    //FileLog.e("tmessages", this +  " 3 - reuse later buffer1");
                 }
                 return;
             }
@@ -535,17 +541,14 @@ public class TcpConnection extends PyroClientAdapter {
                 if (lastPacketLength != 0 && restOfTheData.position() == lastPacketLength || lastPacketLength == 0 && !restOfTheData.hasRemaining()) {
                     BuffersStorage.getInstance().reuseFreeBuffer(restOfTheData);
                     restOfTheData = null;
-                    //FileLog.e("tmessages", this +  " restOfTheData parsed null it");
                 } else {
                     restOfTheData.compact();
                     restOfTheData.limit(restOfTheData.position());
                     restOfTheData.position(0);
-                    //FileLog.e("tmessages", this +  " restOfTheData NOT parsed, compact");
                 }
             }
 
             if (parseLaterBuffer != null) {
-                //FileLog.e("tmessages", this +  " there is parseLaterBuffer");
                 buffer = parseLaterBuffer;
                 parseLaterBuffer = null;
             }
@@ -599,34 +602,36 @@ public class TcpConnection extends PyroClientAdapter {
                 isNextPort = true;
                 if (failedConnectionCount > willRetryConnectCount || switchToNextPort) {
                     Datacenter datacenter = ConnectionsManager.getInstance().datacenterWithId(datacenterId);
-                    datacenter.nextAddressOrPort();
+                    datacenter.nextAddressOrPort(currentAddressFlag);
                     failedConnectionCount = 0;
                 }
             }
             FileLog.d("tmessages", "Reconnect " + hostAddress + ":" + hostPort + " " + TcpConnection.this);
             try {
-                reconnectTimer = new Timer();
-                reconnectTimer.schedule(new TimerTask() {
-                    @Override
-                    public void run() {
-                        selector.scheduleTask(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    synchronized (timerSync) {
-                                        if (reconnectTimer != null) {
-                                            reconnectTimer.cancel();
-                                            reconnectTimer = null;
+                synchronized (timerSync) {
+                    reconnectTimer = new Timer();
+                    reconnectTimer.schedule(new TimerTask() {
+                        @Override
+                        public void run() {
+                            selector.scheduleTask(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        synchronized (timerSync) {
+                                            if (reconnectTimer != null) {
+                                                reconnectTimer.cancel();
+                                                reconnectTimer = null;
+                                            }
                                         }
+                                    } catch (Exception e2) {
+                                        FileLog.e("tmessages", e2);
                                     }
-                                } catch (Exception e2) {
-                                    FileLog.e("tmessages", e2);
+                                    connect();
                                 }
-                                connect();
-                            }
-                        });
-                    }
-                }, failedConnectionCount > 3 ? 500 : 300, failedConnectionCount > 3 ? 500 : 300);
+                            });
+                        }
+                    }, failedConnectionCount > 3 ? 500 : 300, failedConnectionCount > 3 ? 500 : 300);
+                }
             } catch (Exception e3) {
                 FileLog.e("tmessages", e3);
             }

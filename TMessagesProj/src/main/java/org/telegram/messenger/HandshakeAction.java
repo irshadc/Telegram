@@ -1,9 +1,9 @@
 /*
- * This is the source code of Telegram for Android v. 1.3.2.
+ * This is the source code of Telegram for Android v. 2.x.x.
  * It is licensed under GNU GPL v. 2 or later.
  * You should have received a copy of the license in this archive (see LICENSE).
  *
- * Copyright Nikolai Kudashov, 2013.
+ * Copyright Nikolai Kudashov, 2013-2015.
  */
 
 package org.telegram.messenger;
@@ -12,7 +12,6 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 
@@ -29,9 +28,9 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
 
     private boolean processedPQRes;
 
-    private byte[] reqPQMsgData;
-    private byte[] reqDHMsgData;
-    private byte[] setClientDHParamsMsgData;
+    private ByteBufferDesc reqPQMsgData;
+    private ByteBufferDesc reqDHMsgData;
+    private ByteBufferDesc setClientDHParamsMsgData;
     private boolean wasDisconnect = false;
 
     private long lastOutgoingMessageId;
@@ -52,20 +51,29 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
     void beginHandshake(boolean dropConnection) {
         if (datacenter.connection == null) {
             datacenter.connection = new TcpConnection(datacenter.datacenterId);
-            datacenter.connection.delegate = this;
             datacenter.connection.transportRequestClass = RPCRequest.RPCRequestClassGeneric;
         }
+        datacenter.connection.delegate = this;
 
-        processedMessageIds = new ArrayList<Long>();
+        processedMessageIds = new ArrayList<>();
         authNonce = null;
         authServerNonce = null;
         authNewNonce = null;
         authKey = null;
         authKeyId = 0;
         processedPQRes = false;
-        reqPQMsgData = null;
-        reqDHMsgData = null;
-        setClientDHParamsMsgData = null;
+        if (reqPQMsgData != null) {
+            BuffersStorage.getInstance().reuseFreeBuffer(reqPQMsgData);
+            reqPQMsgData = null;
+        }
+        if (reqDHMsgData != null) {
+            BuffersStorage.getInstance().reuseFreeBuffer(reqDHMsgData);
+            reqDHMsgData = null;
+        }
+        if (setClientDHParamsMsgData != null) {
+            BuffersStorage.getInstance().reuseFreeBuffer(setClientDHParamsMsgData);
+            setClientDHParamsMsgData = null;
+        }
 
         if (dropConnection) {
             datacenter.connection.suspendConnection(true);
@@ -74,20 +82,21 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
 
         TLRPC.TL_req_pq reqPq = new TLRPC.TL_req_pq();
         byte[] nonceBytes = new byte[16];
-        MessagesController.random.nextBytes(nonceBytes);
+        Utilities.random.nextBytes(nonceBytes);
         authNonce = reqPq.nonce = nonceBytes;
         reqPQMsgData = sendMessageData(reqPq, generateMessageId());
     }
 
-    final Integer lock = 1;
+    final Object lock = new Object();
     static ArrayList<HashMap<String, Object>> serverPublicKeys = null;
+
     HashMap<String, Object> selectPublicKey(ArrayList<Long> fingerprints) {
         synchronized (lock) {
             if (serverPublicKeys == null) {
-                serverPublicKeys = new ArrayList<HashMap<String, Object>>();
+                serverPublicKeys = new ArrayList<>();
                 HashMap<String, Object> map;
 
-                map = new HashMap<String, Object>();
+                map = new HashMap<>();
                 map.put("key", new BigInteger[]{
                         new BigInteger("c150023e2f70db7985ded064759cfecf0af328e69a41daf4d6f01b538135" +
                                 "a6f91f8f8b2a0ec9ba9720ce352efcf6c5680ffc424bd634864902de0b4bd6d49f4e580230e" +
@@ -100,7 +109,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 map.put("fingerprint", 0xc3b42b026ce86b21L);
                 serverPublicKeys.add(map);
 
-                map = new HashMap<String, Object>();
+                map = new HashMap<>();
                 map.put("key", new BigInteger[]{
                         new BigInteger("c6aeda78b02a251db4b6441031f467fa871faed32526c436524b1fb3b5dc" +
                                 "a28efb8c089dd1b46d92c895993d87108254951c5f001a0f055f3063dcd14d431a300eb9e29" +
@@ -113,7 +122,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 map.put("fingerprint", 0x9a996a1db11c729bL);
                 serverPublicKeys.add(map);
 
-                map = new HashMap<String, Object>();
+                map = new HashMap<>();
                 map.put("key", new BigInteger[]{
                         new BigInteger("b1066749655935f0a5936f517034c943bea7f3365a8931ae52c8bcb14856" +
                                 "f004b83d26cf2839be0f22607470d67481771c1ce5ec31de16b20bbaa4ecd2f7d2ecf6b6356" +
@@ -126,7 +135,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 map.put("fingerprint", 0xb05b2a6f70cdea78L);
                 serverPublicKeys.add(map);
 
-                map = new HashMap<String, Object>();
+                map = new HashMap<>();
                 map.put("key", new BigInteger[]{
                         new BigInteger("c2a8c55b4a62e2b78a19b91cf692bcdc4ba7c23fe4d06f194e2a0c30f6d9" +
                                 "996f7d1a2bcc89bc1ac4333d44359a6c433252d1a8402d9970378b5912b75bc8cc3fa76710a" +
@@ -142,7 +151,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
         }
 
         for (HashMap<String, Object> keyDesc : serverPublicKeys) {
-            long keyFingerprint = (Long)keyDesc.get("fingerprint");
+            long keyFingerprint = (Long) keyDesc.get("fingerprint");
             for (long nFingerprint : fingerprints) {
                 if (nFingerprint == keyFingerprint) {
                     return keyDesc;
@@ -153,7 +162,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
     }
 
     long generateMessageId() {
-        long messageId = (long)((((double)System.currentTimeMillis()) * 4294967296.0) / 1000.0);
+        long messageId = (long) ((((double) System.currentTimeMillis()) * 4294967296.0) / 1000.0);
         if (messageId <= lastOutgoingMessageId) {
             messageId = lastOutgoingMessageId + 1;
         }
@@ -165,38 +174,32 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
         return messageId;
     }
 
-    byte[] sendMessageData(TLObject message, long messageId) {
-        byte[] messageData;
-        SerializedData innerOs = new SerializedData();
-        message.serializeToStream(innerOs);
-        messageData = innerOs.toByteArray();
-
-        SerializedData messageOs = new SerializedData();
+    ByteBufferDesc sendMessageData(TLObject message, long messageId) {
+        int messageLength = message.getObjectSize();
+        ByteBufferDesc messageOs = BuffersStorage.getInstance().getFreeBuffer(8 + 8 + 4 + messageLength);
         messageOs.writeInt64(0);
         messageOs.writeInt64(messageId);
-        messageOs.writeInt32(messageData.length);
-        messageOs.writeRaw(messageData);
+        messageOs.writeInt32(messageLength);
+        message.serializeToStream(messageOs);
+        message.freeResources();
 
-        byte[] transportData = messageOs.toByteArray();
-
-        datacenter.connection.sendData(transportData, false, false);
-
-        return transportData;
+        datacenter.connection.sendData(messageOs, false, false);
+        return messageOs;
     }
 
     void processMessage(TLObject message, long messageId) {
         if (message instanceof TLRPC.TL_resPQ) {
             if (processedPQRes) {
                 TLRPC.TL_msgs_ack msgsAck = new TLRPC.TL_msgs_ack();
-                msgsAck.msg_ids = new ArrayList<Long>();
+                msgsAck.msg_ids = new ArrayList<>();
                 msgsAck.msg_ids.add(messageId);
                 sendMessageData(msgsAck, generateMessageId());
                 return;
             }
 
             processedPQRes = true;
-            final TLRPC.TL_resPQ resPq = (TLRPC.TL_resPQ)message;
-            if (Arrays.equals(authNonce, resPq.nonce)) {
+            final TLRPC.TL_resPQ resPq = (TLRPC.TL_resPQ) message;
+            if (Utilities.arraysEquals(authNonce, 0, resPq.nonce, 0)) {
                 final HashMap<String, Object> publicKey = selectPublicKey(resPq.server_public_key_fingerprints);
                 if (publicKey == null) {
                     FileLog.e("tmessages", "***** Couldn't find valid server public key");
@@ -209,7 +212,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 ByteBuffer data = ByteBuffer.wrap(resPq.pq);
                 final long pqf = data.getLong();
                 final long messageIdf = messageId;
-                Utilities.globalQueue.postRunnable(new Runnable() {
+                new Thread(new Runnable() {
                     @Override
                     public void run() {
 
@@ -219,11 +222,11 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                             @Override
                             public void run() {
                                 ByteBuffer pBytes = ByteBuffer.allocate(4);
-                                pBytes.putInt((int)factorizedPq.p);
+                                pBytes.putInt((int) factorizedPq.p);
                                 byte[] pData = pBytes.array();
 
                                 ByteBuffer qBytes = ByteBuffer.allocate(4);
-                                qBytes.putInt((int)factorizedPq.q);
+                                qBytes.putInt((int) factorizedPq.q);
                                 byte[] qData = qBytes.array();
 
                                 TLRPC.TL_req_DH_params reqDH = new TLRPC.TL_req_DH_params();
@@ -231,7 +234,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                                 reqDH.server_nonce = authServerNonce;
                                 reqDH.p = pData;
                                 reqDH.q = qData;
-                                reqDH.public_key_fingerprint = (Long)publicKey.get("fingerprint");
+                                reqDH.public_key_fingerprint = (Long) publicKey.get("fingerprint");
 
                                 SerializedData os = new SerializedData();
 
@@ -243,22 +246,24 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                                 innerData.q = reqDH.q;
 
                                 byte[] nonceBytes = new byte[32];
-                                MessagesController.random.nextBytes(nonceBytes);
+                                Utilities.random.nextBytes(nonceBytes);
                                 innerData.new_nonce = authNewNonce = nonceBytes;
                                 innerData.serializeToStream(os);
 
                                 byte[] innerDataBytes = os.toByteArray();
+                                os.cleanup();
 
                                 SerializedData dataWithHash = new SerializedData();
                                 dataWithHash.writeRaw(Utilities.computeSHA1(innerDataBytes));
                                 dataWithHash.writeRaw(innerDataBytes);
                                 byte[] b = new byte[1];
                                 while (dataWithHash.length() < 255) {
-                                    MessagesController.random.nextBytes(b);
+                                    Utilities.random.nextBytes(b);
                                     dataWithHash.writeByte(b[0]);
                                 }
 
-                                byte[] encryptedBytes = Utilities.encryptWithRSA((BigInteger[])publicKey.get("key"), dataWithHash.toByteArray());
+                                byte[] encryptedBytes = Utilities.encryptWithRSA((BigInteger[]) publicKey.get("key"), dataWithHash.toByteArray());
+                                dataWithHash.cleanup();
                                 SerializedData encryptedData = new SerializedData();
                                 encryptedData.writeRaw(encryptedBytes);
                                 if (encryptedData.length() < 256) {
@@ -267,28 +272,36 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                                         newEncryptedData.writeByte(0);
                                     }
                                     newEncryptedData.writeRaw(encryptedData.toByteArray());
+                                    encryptedData.cleanup();
                                     encryptedData = newEncryptedData;
                                 }
                                 reqDH.encrypted_data = encryptedData.toByteArray();
+                                encryptedData.cleanup();
 
                                 TLRPC.TL_msgs_ack msgsAck = new TLRPC.TL_msgs_ack();
-                                msgsAck.msg_ids = new ArrayList<Long>();
+                                msgsAck.msg_ids = new ArrayList<>();
                                 msgsAck.msg_ids.add(messageIdf);
                                 sendMessageData(msgsAck, generateMessageId());
 
-                                reqPQMsgData = null;
+                                if (reqPQMsgData != null) {
+                                    BuffersStorage.getInstance().reuseFreeBuffer(reqPQMsgData);
+                                    reqPQMsgData = null;
+                                }
                                 reqDHMsgData = sendMessageData(reqDH, generateMessageId());
                             }
                         });
                     }
-                });
+                }).start();
             } else {
                 FileLog.e("tmessages", "***** Error: invalid handshake nonce");
                 beginHandshake(false);
             }
         } else if (message instanceof TLRPC.Server_DH_Params) {
             if (message instanceof TLRPC.TL_server_DH_params_ok) {
-                TLRPC.TL_server_DH_params_ok serverDhParams = (TLRPC.TL_server_DH_params_ok)message;
+                if (authNewNonce == null) {
+                    return;
+                }
+                TLRPC.TL_server_DH_params_ok serverDhParams = (TLRPC.TL_server_DH_params_ok) message;
 
                 SerializedData tmpAesKey = new SerializedData();
 
@@ -300,8 +313,10 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 serverNonceAndNewNonce.writeRaw(authServerNonce);
                 serverNonceAndNewNonce.writeRaw(authNewNonce);
                 tmpAesKey.writeRaw(Utilities.computeSHA1(newNonceAndServerNonce.toByteArray()));
+                newNonceAndServerNonce.cleanup();
 
                 byte[] serverNonceAndNewNonceHash = Utilities.computeSHA1(serverNonceAndNewNonce.toByteArray());
+                serverNonceAndNewNonce.cleanup();
                 byte[] serverNonceAndNewNonceHash0_12 = new byte[12];
                 System.arraycopy(serverNonceAndNewNonceHash, 0, serverNonceAndNewNonceHash0_12, 0, 12);
 
@@ -317,38 +332,39 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 newNonceAndNewNonce.writeRaw(authNewNonce);
                 newNonceAndNewNonce.writeRaw(authNewNonce);
                 tmpAesIv.writeRaw(Utilities.computeSHA1(newNonceAndNewNonce.toByteArray()));
+                newNonceAndNewNonce.cleanup();
 
                 byte[] newNonce0_4 = new byte[4];
                 System.arraycopy(authNewNonce, 0, newNonce0_4, 0, 4);
                 tmpAesIv.writeRaw(newNonce0_4);
 
-                byte[] answerWithHash = Utilities.aesIgeEncryption(serverDhParams.encrypted_answer, tmpAesKey.toByteArray(), tmpAesIv.toByteArray(), false, false, 0);
-                byte[] answerHash = new byte[20];
-                System.arraycopy(answerWithHash, 0, answerHash, 0, 20);
+                ByteBufferDesc answerWithHash = BuffersStorage.getInstance().getFreeBuffer(serverDhParams.encrypted_answer.length);
+                answerWithHash.writeRaw(serverDhParams.encrypted_answer);
+                answerWithHash.position(0);
 
-                byte[] answerData = new byte[answerWithHash.length - 20];
-                System.arraycopy(answerWithHash, 20, answerData, 0, answerWithHash.length - 20);
+                Utilities.aesIgeEncryption(answerWithHash.buffer, tmpAesKey.toByteArray(), tmpAesIv.toByteArray(), false, false, 0, serverDhParams.encrypted_answer.length);
+                byte[] answerHash = new byte[20];
+                answerWithHash.readRaw(answerHash, false);
+
                 boolean hashVerified = false;
                 for (int i = 0; i < 16; i++) {
-                    byte[] computedAnswerHash = Utilities.computeSHA1(answerData);
-                    if (Arrays.equals(computedAnswerHash, answerHash)) {
+                    byte[] computedAnswerHash = Utilities.computeSHA1(answerWithHash.buffer, 20, answerWithHash.limit() - i);
+                    if (Utilities.arraysEquals(computedAnswerHash, 0, answerHash, 0)) {
                         hashVerified = true;
                         break;
                     }
-                    byte[] answerData2 = new byte[answerData.length - 1];
-                    System.arraycopy(answerData, 0, answerData2, 0, answerData.length - 1);
-                    answerData = answerData2;
                 }
 
                 if (!hashVerified) {
                     FileLog.e("tmessages", "***** Couldn't decode DH params");
                     beginHandshake(false);
+                    BuffersStorage.getInstance().reuseFreeBuffer(answerWithHash);
                     return;
                 }
 
-                SerializedData answerIs = new SerializedData(answerData);
-                int constructor = answerIs.readInt32();
-                TLRPC.TL_server_DH_inner_data dhInnerData = (TLRPC.TL_server_DH_inner_data)TLClassStore.Instance().TLdeserialize(answerIs, constructor);
+                int constructor = answerWithHash.readInt32(false);
+                TLRPC.TL_server_DH_inner_data dhInnerData = TLRPC.TL_server_DH_inner_data.TLdeserialize(answerWithHash, constructor, false);
+                BuffersStorage.getInstance().reuseFreeBuffer(answerWithHash);
 
                 if (!(dhInnerData instanceof TLRPC.TL_server_DH_inner_data)) {
                     FileLog.e("tmessages", "***** Couldn't parse decoded DH params");
@@ -360,19 +376,19 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                     throw new RuntimeException("bad prime");
                 }
 
-                if (!Arrays.equals(authNonce, dhInnerData.nonce)) {
+                if (!Utilities.arraysEquals(authNonce, 0, dhInnerData.nonce, 0)) {
                     FileLog.e("tmessages", "***** Invalid DH nonce");
                     beginHandshake(false);
                     return;
                 }
-                if (!Arrays.equals(authServerNonce, dhInnerData.server_nonce)) {
+                if (!Utilities.arraysEquals(authServerNonce, 0, dhInnerData.server_nonce, 0)) {
                     FileLog.e("tmessages", "***** Invalid DH server nonce");
                     beginHandshake(false);
                     return;
                 }
 
                 byte[] b = new byte[256];
-                MessagesController.random.nextBytes(b);
+                Utilities.random.nextBytes(b);
 
                 BigInteger p = new BigInteger(1, dhInnerData.dh_prime);
                 BigInteger g_a = new BigInteger(1, dhInnerData.g_a);
@@ -408,16 +424,17 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 for (int i = 7; i >= 0; i--) {
                     byte a_ = authNewNonce[i];
                     byte b_ = authServerNonce[i];
-                    byte x = (byte)(a_ ^ b_);
+                    byte x = (byte) (a_ ^ b_);
                     serverSaltData.writeByte(x);
                 }
                 ByteBuffer saltBuffer = ByteBuffer.wrap(serverSaltData.toByteArray());
+                serverSaltData.cleanup();
 
-                timeDifference = dhInnerData.server_time - (int)(System.currentTimeMillis() / 1000);
+                timeDifference = dhInnerData.server_time - (int) (System.currentTimeMillis() / 1000);
 
                 serverSalt = new ServerSalt();
-                serverSalt.validSince = (int)(System.currentTimeMillis() / 1000) + timeDifference;
-                serverSalt.validUntil = (int)(System.currentTimeMillis() / 1000) + timeDifference + 30 * 60;
+                serverSalt.validSince = (int) (System.currentTimeMillis() / 1000) + timeDifference;
+                serverSalt.validUntil = (int) (System.currentTimeMillis() / 1000) + timeDifference + 30 * 60;
                 serverSalt.value = saltBuffer.getLong();
 
                 FileLog.d("tmessages", String.format(Locale.US, "===== Time difference: %d", timeDifference));
@@ -427,53 +444,72 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 clientInnerData.server_nonce = authServerNonce;
                 clientInnerData.g_b = g_b.toByteArray();
                 clientInnerData.retry_id = 0;
-                SerializedData os = new SerializedData();
-                clientInnerData.serializeToStream(os);
-                byte[] clientInnerDataBytes = os.toByteArray();
 
-                SerializedData clientDataWithHash = new SerializedData();
-                clientDataWithHash.writeRaw(Utilities.computeSHA1(clientInnerDataBytes));
-                clientDataWithHash.writeRaw(clientInnerDataBytes);
-                byte[] bb = new byte[1];
-                while (clientDataWithHash.length() % 16 != 0) {
-                    MessagesController.random.nextBytes(bb);
-                    clientDataWithHash.writeByte(bb[0]);
+                ByteBufferDesc os = BuffersStorage.getInstance().getFreeBuffer(clientInnerData.getObjectSize());
+                clientInnerData.serializeToStream(os);
+
+                int len = os.length() + 20;
+                int extraLen = len % 16 != 0 ? 16 - len % 16 : 0;
+                ByteBufferDesc clientDataWithHash = BuffersStorage.getInstance().getFreeBuffer(len + extraLen);
+                clientDataWithHash.writeRaw(Utilities.computeSHA1(os.buffer));
+                os.position(0);
+                clientDataWithHash.writeRaw(os);
+                if (extraLen != 0) {
+                    byte[] bb = new byte[extraLen];
+                    Utilities.random.nextBytes(bb);
+                    clientDataWithHash.writeRaw(bb);
                 }
+                BuffersStorage.getInstance().reuseFreeBuffer(os);
 
                 TLRPC.TL_set_client_DH_params setClientDhParams = new TLRPC.TL_set_client_DH_params();
                 setClientDhParams.nonce = authNonce;
                 setClientDhParams.server_nonce = authServerNonce;
-                setClientDhParams.encrypted_data = Utilities.aesIgeEncryption(clientDataWithHash.toByteArray(), tmpAesKey.toByteArray(), tmpAesIv.toByteArray(), true, false, 0);
+                Utilities.aesIgeEncryption(clientDataWithHash.buffer, tmpAesKey.toByteArray(), tmpAesIv.toByteArray(), true, false, 0, clientDataWithHash.length());
+                setClientDhParams.encrypted_data = clientDataWithHash;
+
+                tmpAesKey.cleanup();
+                tmpAesIv.cleanup();
 
                 TLRPC.TL_msgs_ack msgsAck = new TLRPC.TL_msgs_ack();
-                msgsAck.msg_ids = new ArrayList<Long>();
+                msgsAck.msg_ids = new ArrayList<>();
                 msgsAck.msg_ids.add(messageId);
                 sendMessageData(msgsAck, generateMessageId());
 
-                reqDHMsgData = null;
+                if (reqDHMsgData != null) {
+                    BuffersStorage.getInstance().reuseFreeBuffer(reqDHMsgData);
+                    reqDHMsgData = null;
+                }
                 setClientDHParamsMsgData = sendMessageData(setClientDhParams, generateMessageId());
             } else {
                 FileLog.e("tmessages", "***** Couldn't set DH params");
                 beginHandshake(false);
             }
         } else if (message instanceof TLRPC.Set_client_DH_params_answer) {
-            TLRPC.Set_client_DH_params_answer dhAnswer = (TLRPC.Set_client_DH_params_answer)message;
+            if (setClientDHParamsMsgData != null) {
+                BuffersStorage.getInstance().reuseFreeBuffer(setClientDHParamsMsgData);
+                setClientDHParamsMsgData = null;
+            }
 
-            if (!Arrays.equals(authNonce, dhAnswer.nonce)) {
+            TLRPC.Set_client_DH_params_answer dhAnswer = (TLRPC.Set_client_DH_params_answer) message;
+
+            if (!Utilities.arraysEquals(authNonce, 0, dhAnswer.nonce, 0)) {
                 FileLog.e("tmessages", "***** Invalid DH answer nonce");
                 beginHandshake(false);
                 return;
             }
-            if (!Arrays.equals(authServerNonce, dhAnswer.server_nonce)) {
+            if (!Utilities.arraysEquals(authServerNonce, 0, dhAnswer.server_nonce, 0)) {
                 FileLog.e("tmessages", "***** Invalid DH answer server nonce");
                 beginHandshake(false);
                 return;
             }
 
-            reqDHMsgData = null;
+            if (reqDHMsgData != null) {
+                BuffersStorage.getInstance().reuseFreeBuffer(reqDHMsgData);
+                reqDHMsgData = null;
+            }
 
             TLRPC.TL_msgs_ack msgsAck = new TLRPC.TL_msgs_ack();
-            msgsAck.msg_ids = new ArrayList<Long>();
+            msgsAck.msg_ids = new ArrayList<>();
             msgsAck.msg_ids.add(messageId);
             sendMessageData(msgsAck, generateMessageId());
 
@@ -486,6 +522,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
             newNonce1.writeByte(1);
             newNonce1.writeRaw(authKeyAuxHash);
             byte[] newNonceHash1Full = Utilities.computeSHA1(newNonce1.toByteArray());
+            newNonce1.cleanup();
             byte[] newNonceHash1 = new byte[16];
             System.arraycopy(newNonceHash1Full, newNonceHash1Full.length - 16, newNonceHash1, 0, 16);
 
@@ -494,6 +531,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
             newNonce2.writeByte(2);
             newNonce2.writeRaw(authKeyAuxHash);
             byte[] newNonceHash2Full = Utilities.computeSHA1(newNonce2.toByteArray());
+            newNonce2.cleanup();
             byte[] newNonceHash2 = new byte[16];
             System.arraycopy(newNonceHash2Full, newNonceHash2Full.length - 16, newNonceHash2, 0, 16);
 
@@ -502,12 +540,13 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
             newNonce3.writeByte(3);
             newNonce3.writeRaw(authKeyAuxHash);
             byte[] newNonceHash3Full = Utilities.computeSHA1(newNonce3.toByteArray());
+            newNonce3.cleanup();
             byte[] newNonceHash3 = new byte[16];
             System.arraycopy(newNonceHash3Full, newNonceHash3Full.length - 16, newNonceHash3, 0, 16);
 
             if (message instanceof TLRPC.TL_dh_gen_ok) {
-                TLRPC.TL_dh_gen_ok dhGenOk = (TLRPC.TL_dh_gen_ok)message;
-                if (!Arrays.equals(newNonceHash1, dhGenOk.new_nonce_hash1)) {
+                TLRPC.TL_dh_gen_ok dhGenOk = (TLRPC.TL_dh_gen_ok) message;
+                if (!Utilities.arraysEquals(newNonceHash1, 0, dhGenOk.new_nonce_hash1, 0)) {
                     FileLog.e("tmessages", "***** Invalid DH answer nonce hash 1");
                     beginHandshake(false);
                     return;
@@ -523,7 +562,7 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                         datacenter.authKey = authKey;
                         datacenter.authKeyId = authKeyId;
                         datacenter.addServerSalt(serverSalt);
-                        HashMap<String, Object> resultDict = new HashMap<String, Object>();
+                        HashMap<String, Object> resultDict = new HashMap<>();
                         resultDict.put("timeDifference", timeDifference);
                         if (delegate != null) {
                             delegate.ActionDidFinishExecution(parent, resultDict);
@@ -531,8 +570,8 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                     }
                 });
             } else if (message instanceof TLRPC.TL_dh_gen_retry) {
-                TLRPC.TL_dh_gen_retry dhRetry = (TLRPC.TL_dh_gen_retry)message;
-                if (!Arrays.equals(newNonceHash2, dhRetry.new_nonce_hash2)) {
+                TLRPC.TL_dh_gen_retry dhRetry = (TLRPC.TL_dh_gen_retry) message;
+                if (!Utilities.arraysEquals(newNonceHash2, 0, dhRetry.new_nonce_hash2, 0)) {
                     FileLog.e("tmessages", "***** Invalid DH answer nonce hash 2");
                     beginHandshake(false);
                     return;
@@ -540,8 +579,8 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
                 FileLog.d("tmessages", "***** Retry DH");
                 beginHandshake(false);
             } else if (message instanceof TLRPC.TL_dh_gen_fail) {
-                TLRPC.TL_dh_gen_fail dhFail = (TLRPC.TL_dh_gen_fail)message;
-                if (!Arrays.equals(newNonceHash3, dhFail.new_nonce_hash3)) {
+                TLRPC.TL_dh_gen_fail dhFail = (TLRPC.TL_dh_gen_fail) message;
+                if (!Utilities.arraysEquals(newNonceHash3, 0, dhFail.new_nonce_hash3, 0)) {
                     FileLog.e("tmessages", "***** Invalid DH answer nonce hash 3");
                     beginHandshake(false);
                     return;
@@ -554,20 +593,21 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
             }
         } else {
             TLRPC.TL_msgs_ack msgsAck = new TLRPC.TL_msgs_ack();
-            msgsAck.msg_ids = new ArrayList<Long>();
+            msgsAck.msg_ids = new ArrayList<>();
             msgsAck.msg_ids.add(messageId);
             sendMessageData(msgsAck, generateMessageId());
         }
     }
 
     @Override
-    public void tcpConnectionProgressChanged(TcpConnection connection, long messageId, int currentSize, int length) {
-
-    }
-
-    @Override
-    public void tcpConnectionClosed(TcpConnection connection) {
+    public void tcpConnectionClosed(final TcpConnection connection) {
         wasDisconnect = true;
+        Utilities.stageQueue.postRunnable(new Runnable() {
+            @Override
+            public void run() {
+                connection.connect();
+            }
+        }, 1000);
     }
 
     @Override
@@ -591,19 +631,17 @@ public class HandshakeAction extends Action implements TcpConnection.TcpConnecti
 
     @Override
     public void tcpConnectionReceivedData(TcpConnection connection, ByteBufferDesc data, int length) {
-
-        long keyId = data.readInt64();
-
+        long keyId = data.readInt64(false);
         if (keyId == 0) {
-            long messageId = data.readInt64();
+            long messageId = data.readInt64(false);
             if (processedMessageIds.contains(messageId)) {
                 FileLog.d("tmessages", String.format("===== Duplicate message id %d received, ignoring", messageId));
                 return;
             }
-            int messageLength = data.readInt32();
+            data.readInt32(false);
 
-            int constructor = data.readInt32();
-            TLObject object = TLClassStore.Instance().TLdeserialize(data, constructor);
+            int constructor = data.readInt32(false);
+            TLObject object = TLClassStore.Instance().TLdeserialize(data, constructor, false);
 
             if (object != null) {
                 processedMessageIds.add(messageId);
